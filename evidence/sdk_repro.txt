@@ -1,0 +1,14 @@
+Reproduced through AssemblyAI's official Python SDK (assemblyai==1.6.1):
+
+  import assemblyai as aai
+  aai.settings.api_key = "<key>"
+  tr = aai.DictationTranscriber()
+  tr.transcribe_live(<16ms WAV>)   # 256 samples @ 16kHz
+
+  -> raises assemblyai.dictation.v1.models.DictationError: inference failed
+
+  tr.transcribe_live(<16.06ms WAV>)  # 257 samples @ 16kHz
+  -> OK, text=''
+
+So the bug affects SDK users directly, surfacing as an unhandled DictationError
+for valid short audio rather than an empty transcript.

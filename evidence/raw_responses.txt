@@ -1,0 +1,10 @@
+### 256 samples / 16 ms (bug)
+HTTP 500
+content-type: None
+body: {"status":500,"title":"Inference Error","detail":"inference failed"}
+
+### 257 samples / 16.06 ms (ok)
+HTTP 200
+content-type: None
+body: {"text":"","words":[],"confidence":0.0,"audio_duration_ms":16,"session_id":"d951f359-ebad-466c-becb-c51aa421374e","request_time_ms":71.35751703754067,"llm_response":null,"llm_error":null,"sync_time_ms":44.95644010603428,"auth_time_ms":8.099710918031633}
+
