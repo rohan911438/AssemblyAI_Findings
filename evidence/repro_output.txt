@@ -1,8 +1,0 @@
-    0 samples @ 16000 Hz =   0.00 ms -> HTTP 200
-    1 samples @ 16000 Hz =   0.06 ms -> HTTP 500  <-- HTTP 500 on VALID input
-  128 samples @ 16000 Hz =   8.00 ms -> HTTP 500  <-- HTTP 500 on VALID input
-  256 samples @ 16000 Hz =  16.00 ms -> HTTP 500  <-- HTTP 500 on VALID input
-  257 samples @ 16000 Hz =  16.06 ms -> HTTP 200
-  300 samples @ 16000 Hz =  18.75 ms -> HTTP 200
-  706 samples @ 44100 Hz =  16.01 ms -> HTTP 500  <-- HTTP 500 on VALID input
-  707 samples @ 44100 Hz =  16.03 ms -> HTTP 200
