@@ -1,169 +1,176 @@
 # AssemblyAI Dictation API — Findings
 
 Submission for the AssemblyAI "Hack into Speech" voice hackathon, covering three
-tracks: Bug Report, API feedback, and Security review.
+tracks: **Bug Report**, **API feedback**, and **Security review**.
 
-This repository documents three independent, validated defects in the Dictation
-API (`dictation.assemblyai.com`), each with a one-command reproduction and
-captured evidence. Every finding was reproduced against the live API on two
-independent keys. No product was built; the submission is the findings.
+This repository documents **three independent, validated defects** in the
+Dictation API (`dictation.assemblyai.com`), each with a one-command reproduction
+you can run yourself and a detailed written evidence file. Every finding was
+reproduced against the live API on two independent API keys. No product was
+built — the submission is the findings.
 
-## Contents
+Bugs are numbered by priority: **Bug 1** is the most impactful.
+
+## Summary of findings
+
+| # | Finding | Class | Severity | Reproduce with | Full evidence |
+|---|---|---|---|---|---|
+| 1 | WAV reader counts bytes after the `data` chunk as audio — wrong `audio_duration_ms` and spurious `413` on valid files | Correctness / billing integrity | High | `repro_duration.py` | [bug-01-wav-duration-inflation.md](evidence/bug-01-wav-duration-inflation.md) |
+| 2 | `HTTP 500 "inference failed"` on valid audio of 0 < duration ≤ 16 ms | Reliability / crash | High | `repro.py` | [bug-02-short-audio-500.md](evidence/bug-02-short-audio-500.md) |
+| 3 | Custom-`llm_instruction` output silently discarded (`llm_response: null`) with undocumented `llm_error: "truncated"` | Product correctness | Medium | `repro_truncation.py` | [bug-03-llm-truncation.md](evidence/bug-03-llm-truncation.md) |
+
+> The repro scripts are named by what they do, so Bug 2 (the crash) is
+> `repro.py`; the table's "Reproduce with" column is the authoritative mapping.
+
+## How to test these yourself
+
+**Prerequisites:** Python 3 and an AssemblyAI API key. The scripts use only the
+Python standard library — no `pip install` is needed, except the optional SDK
+check in `repro.py` (`pip install assemblyai`).
+
+**Set your key once:**
+
+```bash
+export AAI_KEY=<your_assemblyai_api_key>
+```
+
+**Run each reproduction (about 5–10 seconds each):**
+
+```bash
+python3 repro_duration.py      # Bug 1 — WAV trailing-chunk duration inflation
+python3 repro.py               # Bug 2 — HTTP 500 on short audio (and the SDK, if installed)
+python3 repro_truncation.py    # Bug 3 — cleaned output silently discarded
+```
+
+Each script prints a labelled table of requests and results; the inflated
+durations, the `500`s, and the `null`/`truncated` responses are flagged inline.
+The matching `evidence/*.md` file walks through exactly what each line means.
+
+## Repository contents
 
 | Path | Description |
 |---|---|
 | `README.md` | This report: three bug tickets, API feedback, security review |
-| `repro.py` | Reproduces Bug 1 (HTTP 500 on short audio); HTTP + optional SDK |
-| `repro_duration.py` | Reproduces Bug 2 (WAV trailing-chunk duration inflation) |
-| `repro_truncation.py` | Reproduces Bug 3 (silent discard of cleaned output) |
+| `repro_duration.py` | Reproduces **Bug 1** (WAV trailing-chunk duration inflation) |
+| `repro.py` | Reproduces **Bug 2** (HTTP 500 on short audio); HTTP + optional SDK |
+| `repro_truncation.py` | Reproduces **Bug 3** (silent discard of cleaned output) |
 | `fixtures/speech_short.wav` | ~3.7 s speech clip used by `repro_truncation.py` |
-| `evidence/bug-01-short-audio-500.md` | Captured output and raw bodies for Bug 1 |
-| `evidence/bug-02-wav-duration-inflation.md` | Captured output and raw bodies for Bug 2 |
-| `evidence/bug-03-llm-truncation.md` | Captured output and raw bodies for Bug 3 |
-| `evidence/additional-feedback-and-security.md` | API feedback and security test results |
-
-## Quick start
-
-```bash
-AAI_KEY=<your_key> python3 repro_duration.py      # Bug 2
-AAI_KEY=<your_key> python3 repro.py               # Bug 1 (add `pip install assemblyai` for the SDK path)
-AAI_KEY=<your_key> python3 repro_truncation.py    # Bug 3
-```
-
-All three scripts use the Python standard library only (the SDK path in
-`repro.py` is optional).
-
-## Summary of findings
-
-| # | Finding | Class | Severity |
-|---|---|---|---|
-| 1 | HTTP 500 "inference failed" on valid audio of 0 < duration <= 16 ms | Reliability / crash | High |
-| 2 | WAV reader counts bytes after the `data` chunk as audio: wrong `audio_duration_ms` and spurious `413` | Correctness / billing integrity | High |
-| 3 | Custom-`llm_instruction` output silently discarded (`llm_response: null`) with undocumented `llm_error: "truncated"` | Product correctness | Medium |
+| `evidence/bug-01-wav-duration-inflation.md` | Detailed walkthrough + raw bodies — Bug 1 |
+| `evidence/bug-02-short-audio-500.md` | Detailed walkthrough + raw bodies — Bug 2 |
+| `evidence/bug-03-llm-truncation.md` | Detailed walkthrough + raw bodies — Bug 3 |
+| `evidence/additional-feedback-and-security.md` | API feedback + security test results |
 
 ---
 
-# Bug 2 (primary) — WAV reader decodes trailing chunks as audio
+# Bug 1 (primary) — WAV reader decodes trailing chunks as audio
 
 | | |
 |---|---|
 | **Title** | WAV reader ignores `data`/RIFF sizes and decodes to end-of-stream, counting trailing chunks as audio |
-| **Component** | `dictation.assemblyai.com` audio ingestion (WAV demuxer) |
+| **Component** | `dictation.assemblyai.com` audio ingestion (WAV reader) |
 | **Endpoints** | `POST /v1/transcribe/live`, legacy `POST /v1/transcribe/stream` |
 | **Severity** | **High** — wrong reported duration (billing-integrity risk) and spurious rejection of valid files |
-| **Status** | Reproduced on 2 keys, 3/3 per case |
+| **Reproduce** | `AAI_KEY=<key> python3 repro_duration.py` |
+| **Full evidence** | [`evidence/bug-01-wav-duration-inflation.md`](evidence/bug-01-wav-duration-inflation.md) |
 
-## 1. Summary
+## Summary
 
-After locating the `fmt ` and `data` chunk headers, the WAV reader decodes every
-byte from the start of the `data` payload to end-of-stream as 16-bit PCM. It
-honors neither the `data` chunk's declared size nor the RIFF size. Standard,
-spec-compliant chunks that follow `data` — `JUNK` alignment padding,
-`LIST`/`INFO` metadata, `id3`, `cue`, Broadcast-WAV `bext`/`iXML` — are therefore
-counted as audio samples.
+A WAV file is a container of labelled chunks: `fmt ` (format), `data` (the audio),
+and optionally standard extras such as `JUNK` (padding), `LIST`/`INFO` (metadata),
+or Broadcast-WAV `bext`. Each chunk declares its own length, so a correct reader
+knows exactly where the audio ends. The Dictation API's reader does not use the
+`data` chunk's length: once it finds `data`, it decodes everything to the end of
+the file as PCM. Any standard chunk placed after `data` is therefore misread as
+audio samples.
 
-## 2. Impact
+## Impact
 
-1. **Wrong `audio_duration_ms`.** The reported duration includes non-audio
-   trailing bytes. 1000 ms of real speech plus a 1 MB `JUNK` chunk is reported as
-   32250 ms. If duration drives billing (list pricing is per hour of audio), this
-   is a billing-integrity and potential overcharge issue; independently, the
-   returned field is simply incorrect.
+1. **Wrong `audio_duration_ms` (billing-integrity risk).** The reported duration
+   includes non-audio trailing bytes. 1000 ms of speech plus a 1 MB `JUNK` chunk
+   is reported as 32250 ms. If duration drives the per-hour billing, this inflates
+   the billed amount; regardless, the returned field is incorrect.
 2. **Spurious `413` on valid files.** A real sub-120 s WAV can be rejected because
-   its trailing metadata or padding is miscounted toward the 120000 ms limit. A
-   119000 ms clip plus 200 KB of padding returns `413 audio_too_large`, though the
-   true audio is well under the limit.
-3. **Transcript-integrity risk.** Bytes after `data` that happen to encode
-   speech-like PCM would be transcribed as if part of the recording.
+   trailing metadata/padding is miscounted toward the 120000 ms limit. A 119000 ms
+   clip plus 200 KB of padding returns `413 audio_too_large`.
+3. **Transcript-integrity risk.** Trailing bytes that encode speech-like PCM would
+   be transcribed as if part of the recording.
 
-These trailing chunks are produced by common tooling (alignment padding,
-metadata tags, Broadcast-WAV), so ordinary files — not just synthetic ones — are
-affected.
+These trailing chunks are produced by common, conformant tooling, so ordinary
+real-world files — not only synthetic ones — are affected.
 
-## 3. Steps to reproduce
+## Steps to reproduce
 
 ```bash
 AAI_KEY=<your_key> python3 repro_duration.py
 ```
 
-Observed (`evidence/bug-02-wav-duration-inflation.md`):
+Observed:
 
 ```
-== 1000 ms of real PCM, with trailing chunks appended after `data` ==
 data only (control)                -> HTTP 200, audio_duration_ms=1000
 + JUNK chunk of 32,000 bytes       -> HTTP 200, audio_duration_ms=2000    (true audio is 1000 ms)
 + JUNK chunk of 1,000,000 bytes    -> HTTP 200, audio_duration_ms=32250   (true audio is 1000 ms)
-
-== spurious 413: a valid 119,000 ms clip + 200 KB of trailing JUNK ==
-119000 ms audio + 200 KB JUNK -> HTTP 413 {"error":"audio exceeds 120000 ms","error_code":"audio_too_large"}
+119000 ms audio + 200 KB JUNK      -> HTTP 413 {"error":"audio exceeds 120000 ms","error_code":"audio_too_large"}
 ```
 
-## 4. Actual vs. expected
+## Root cause — where this lives
 
-- **Actual:** reported duration = `(data_payload .. EOF) / 2 / sample_rate`; the
-  120 s cap is applied to this inflated count.
-- **Expected:** read exactly the `data` chunk's declared number of bytes (bounded
-  by the RIFF size), and skip any subsequent chunks, as the reader already does
-  for chunks that precede `data`.
+In the WAV reader, in the step that decides how many PCM bytes to read from the
+`data` chunk. Chunks *before* `data` are parsed and skipped correctly, so the
+chunk walker exists; the defect is that once `data` is reached the reader consumes
+to end-of-stream instead of stopping at `data_offset + data_size` (and instead of
+trusting the RIFF size as an outer bound). Confirmed by setting the `data` size
+field to `200` while 32000 bytes are present (all 32000 still decoded) and the
+RIFF size to `4` (whole stream still decoded). The full confirmation is in the
+evidence file.
 
-## 5. Root cause — where this lives
+## Suggested fix
 
-In the WAV demuxer, in the step that determines how many PCM bytes to read from
-the `data` chunk. Pre-`data` chunks are parsed and skipped correctly, so the
-chunk walker exists; the defect is that once `data` is reached, the reader
-consumes to end-of-stream instead of stopping at `data_offset + data_size` (and
-instead of trusting the RIFF size as an outer bound). Confirmed: setting the
-`data` size field to `200` while 32000 bytes are present still decodes all 32000
-bytes, and setting the RIFF size to `4` still decodes everything.
-
-## 6. Suggested fix
-
-When reading the `data` chunk, read exactly `min(data_chunk_size, riff_bound)`
-bytes and ignore trailing chunks (continue the existing chunk walk past `data`
-rather than treating the remainder as samples). Compute `audio_duration_ms` and
-apply the 120 s cap from that bounded sample count.
+Read exactly `min(declared_data_size, riff_bound)` bytes for the `data` chunk and
+skip any trailing chunks (continue the existing chunk walk past `data`). Compute
+`audio_duration_ms` and apply the 120 s cap from that bounded sample count.
 
 ---
 
-# Bug 1 — HTTP 500 crash on valid short audio
+# Bug 2 — HTTP 500 crash on valid short audio
 
 | | |
 |---|---|
-| **Title** | Dictation API returns `500 "inference failed"` for valid audio of 0 < duration <= 16 ms |
+| **Title** | Dictation API returns `500 "inference failed"` for valid audio of 0 < duration ≤ 16 ms |
 | **Component** | `dictation.assemblyai.com` inference service (Universal-3.5 Pro, Dictation) |
 | **Endpoints** | `POST /v1/transcribe/live`, legacy `POST /v1/transcribe/stream` |
 | **Also affects** | Official Python SDK `assemblyai==1.6.1` (`DictationTranscriber.transcribe_live`) |
 | **Severity** | **High** — unhandled 5xx on valid input in a path real clients hit |
-| **Status** | Reproduced on 2 keys, both endpoints, HTTP + SDK |
+| **Reproduce** | `AAI_KEY=<key> python3 repro.py` |
+| **Full evidence** | [`evidence/bug-02-short-audio-500.md`](evidence/bug-02-short-audio-500.md) |
 
-## 1. Summary
+## Summary
 
 The service returns `HTTP 500 {"status":500,"title":"Inference Error","detail":"inference failed"}`
 for any valid WAV/PCM audio whose duration is greater than 0 and at most 16 ms.
 This is a server fault (`5xx`), not a client-input rejection — it is surfaced as
 neither `400`, `413`, nor `415`.
 
-## 2. The behavior is non-monotonic
+## The behavior is non-monotonic
 
 | Audio duration | Result |
 |---|---|
 | `0 ms` (empty) | `200 OK` (empty transcript) — handled |
-| `0 < d <= 16 ms` | `500 Inference Error` — crashes |
+| `0 < d ≤ 16 ms` | `500 Inference Error` — crashes |
 | `d > 16 ms` | `200 OK` — handled |
 
-A client sending less data (0 ms) succeeds, a client sending slightly more (8 ms)
-gets a 500, and a client sending even more (17 ms) succeeds again. No
-input-validation policy produces a hole in the middle of the range; an unguarded
-code path does.
+Less data (0 ms) succeeds, slightly more (8 ms) crashes, even more (17 ms)
+succeeds again. No input-validation policy produces a hole in the middle of a
+range; an unguarded code path does.
 
-## 3. Steps to reproduce
+## Steps to reproduce
 
 ```bash
 AAI_KEY=<your_key> python3 repro.py        # HTTP path, standard library only
 pip install assemblyai && AAI_KEY=<key> python3 repro.py   # also drives the official SDK
 ```
 
-Observed (`evidence/bug-01-short-audio-500.md`):
+Observed:
 
 ```
     0 samples @ 16000 Hz =   0.00 ms -> HTTP 200
@@ -175,47 +182,32 @@ Observed (`evidence/bug-01-short-audio-500.md`):
 Python SDK: 256 samples -> DictationError: inference failed;  257 samples -> OK
 ```
 
-## 4. Actual vs. expected
-
-- **Actual:** `500 "inference failed"` (HTTP) / `DictationError` (SDK).
-- **Expected:** the graceful handling the 0 ms case already receives — `200` with
-  an empty transcript — or a documented `4xx` (for example `audio_too_short`),
-  mirroring the existing `413 audio_too_large`.
-
-## 5. Root cause — where this lives
+## Root cause — where this lives
 
 The failing boundary is exactly 16 ms and is identical across sample rates
 (256 samples at 16 kHz, 706 at 44.1 kHz). A fixed time threshold invariant to
 sample rate points at the front-end feature extractor: 16 ms is one analysis
-frame. When decoded audio is shorter than a single frame, framing produces zero
-complete frames and the model is invoked on an empty feature tensor, which raises
-inside inference and surfaces as the generic `500`. The `0 ms` case is already
-special-cased (returns `200`, empty transcript); the defect is that
-`0 < d <= 16 ms` falls through that early return into the model. Pathological-but-
-valid audio at normal length returns `200`, isolating the cause to length, not
-content.
+frame. Audio shorter than one frame yields zero frames, the model is invoked on an
+empty feature tensor, and that raises inside inference and surfaces as the generic
+`500`. The `0 ms` case is already special-cased (returns `200`, empty transcript);
+the defect is that `0 < d ≤ 16 ms` falls through that early return into the model.
+Pathological-but-valid audio at normal length returns `200`, isolating the cause
+to length, not content.
 
-## 6. Suggested fix
+## Suggested fix
 
-After decode and before framing, extend the existing empty-audio early return to
-cover sub-frame input:
+After decode, extend the existing empty-audio early return to cover sub-frame
+input (`samples * 1000 / sample_rate <= 16` → return an empty transcript, or a
+documented `audio_too_short` 4xx), and document the lower bound next to the 120 s
+upper bound.
 
-```python
-if samples == 0:
-    return ok_empty_transcript()          # existing behavior
-if samples * 1000 / sr <= FRAME_MS:       # FRAME_MS == 16
-    return ok_empty_transcript()          # treat sub-frame like empty, OR
-    # raise BadRequest(error_code="audio_too_short", ...)
-```
+## Impact
 
-## 7. Impact
-
-16 ms is below one frame, but production dictation clients emit sub-16 ms clips
-routinely: a tap-and-release on the mic, a push-to-talk key pressed and released
-in one keystroke, or a client-side VAD emitting a tiny leading/trailing segment.
-Each becomes a hard `500` (or an uncaught `DictationError` in SDK apps), and
-because it is a `5xx`, default retry logic will retry input that can never
-succeed.
+Production dictation clients emit sub-16 ms clips routinely — a tap-and-release on
+the mic, a push-to-talk key pressed and released in one keystroke, or a VAD
+emitting a tiny segment. Each becomes a hard `500` (or an uncaught `DictationError`
+in SDK apps), and because it is a `5xx`, default retry logic retries input that can
+never succeed.
 
 ---
 
@@ -227,29 +219,28 @@ succeed.
 | **Component** | `dictation.assemblyai.com` LLM cleanup path |
 | **Endpoints** | `POST /v1/transcribe/live` |
 | **Severity** | **Medium** — user-facing silent data loss in the core cleanup feature |
-| **Status** | Reproduced on 2 keys, deterministic |
+| **Reproduce** | `AAI_KEY=<key> python3 repro_truncation.py` |
+| **Full evidence** | [`evidence/bug-03-llm-truncation.md`](evidence/bug-03-llm-truncation.md) |
 
-## 1. Summary
+## Summary
 
-When a custom `llm_instruction` requests cleaned output longer than a hidden,
-transcript-length-proportional budget, the API silently discards the entire
-cleaned output (`llm_response: null`) and returns `llm_error: "truncated"` under
-`HTTP 200`. The verbatim `text` field is still present, so a client that renders
-`llm_response` as the finished output shows the user a blank result.
+The response carries `text` (verbatim) and `llm_response` (the model-cleaned
+version, shaped by the `llm_instruction` field). When a custom `llm_instruction`
+requests cleaned output longer than a hidden, transcript-length-proportional
+budget, the API silently discards the entire cleaned output (`llm_response: null`)
+and returns `llm_error: "truncated"` under `HTTP 200`. The verbatim `text` is
+still present, so a client that renders `llm_response` shows the user a blank
+result. `"truncated"` is not in the documented `llm_error` enum
+(`null | "timeout" | "upstream_error"`).
 
-`"truncated"` is not in the documented `llm_error` enum
-(`null | "timeout" | "upstream_error"`), so client code written to the documented
-set will not anticipate it.
-
-## 2. Steps to reproduce
+## Steps to reproduce
 
 ```bash
 AAI_KEY=<your_key> python3 repro_truncation.py
 ```
 
-Fixture: `fixtures/speech_short.wav` (~3.67 s, transcript "Send the quarterly
-report to Margaret by Friday."). Observed
-(`evidence/bug-03-llm-truncation.md`):
+Fixture: `fixtures/speech_short.wav` (~3.67 s, "Send the quarterly report to
+Margaret by Friday."). Observed:
 
 ```
 instruction: short formal email (fits budget)                  -> HTTP 200, llm_error=None,        llm_response=213 chars
@@ -259,31 +250,28 @@ output a sentence exactly  8 times -> HTTP 200, llm_error=None,        llm_respo
 output a sentence exactly 10 times -> HTTP 200, llm_error='truncated', llm_response=null
 ```
 
-## 3. Actual vs. expected
+## Why it is a trap
 
-- **Actual:** `200` with `llm_response: null` and the undocumented
-  `llm_error: "truncated"`; the whole cleaned output is dropped rather than
-  returned partial.
-- **Expected:** either return the cleaned output, or document the budget and the
-  `"truncated"` error value and consider returning a partial result. At minimum,
-  `"truncated"` belongs in the published `llm_error` enum.
+The budget scales with transcript length: the identical forced-length instruction
+that fails on this ~8-word transcript (cap ≈ 200 characters) succeeds on a longer
+(~130-word) transcript. The cliff is invisible to the caller and depends on how
+much was dictated, not on the instruction — so a feature tested with long samples
+will silently fail for users who dictate short notes, the most common case. The
+most natural use of `llm_instruction` (expand/reformat a short note) is exactly
+what exceeds the budget.
 
-## 4. Notes
+## Suggested fix
 
-- The budget scales with transcript length: the identical forced-length
-  instruction that fails on this ~8-word transcript (cap roughly 200 characters)
-  succeeds on a longer (~130-word) transcript. The cliff is therefore invisible
-  to the caller and depends on how much was dictated, not on the instruction.
-- The most natural use of `llm_instruction` — dictate a short note and ask the
-  model to expand or reformat it — is exactly the case that exceeds the budget.
-- Plain default cleanup (no `llm_instruction`) was not observed to hit this.
+At minimum, add `"truncated"` to the documented `llm_error` enum and document the
+output budget. Better, return the partial output or fall back to `text` with a
+flag, so a successful request never renders as a blank.
 
 ---
 
 # API feedback (suggestions)
 
 Lower-severity items found during testing; details and captures in
-`evidence/additional-feedback-and-security.md`.
+[`evidence/additional-feedback-and-security.md`](evidence/additional-feedback-and-security.md).
 
 1. **`llm_instruction` length limit not enforced.** Docs state 2048 characters;
    the server accepts at least 20,000. Sibling fields (`stt_prompt` 6000,
@@ -303,10 +291,10 @@ Lower-severity items found during testing; details and captures in
 
 # Security review
 
-No vulnerability was found. The tested surfaces and one hardening suggestion are
-recorded in `evidence/additional-feedback-and-security.md`. In summary: transcript
-retrieval, cross-account access, secret leakage, config injection, cross-request
-contamination, and prompt disclosure were all tested (own accounts only,
-read-only, no denial-of-service) and showed a solid posture. The one design
-suggestion is to offer short-lived or scoped tokens so browser clients need not
-embed a long-lived API key.
+No vulnerability was found. Tested surfaces and one hardening suggestion are in
+[`evidence/additional-feedback-and-security.md`](evidence/additional-feedback-and-security.md).
+In summary: transcript retrieval, cross-account access, secret leakage, config
+injection, cross-request contamination, and prompt disclosure were all tested
+(own accounts only, read-only, no denial-of-service) and showed a solid posture.
+The one design suggestion is to offer short-lived or scoped tokens so browser
+clients need not embed a long-lived API key.

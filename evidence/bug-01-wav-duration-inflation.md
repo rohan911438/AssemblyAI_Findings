@@ -1,4 +1,4 @@
-# Evidence — Bug 2: the WAV reader counts trailing chunks as audio
+# Evidence — Bug 1: the WAV reader counts trailing chunks as audio
 
 ## What this bug is, in one paragraph
 

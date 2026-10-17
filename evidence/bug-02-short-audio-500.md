@@ -1,4 +1,4 @@
-# Evidence — Bug 1: HTTP 500 crash on valid short audio
+# Evidence — Bug 2: HTTP 500 crash on valid short audio
 
 ## What this bug is, in one paragraph
 
